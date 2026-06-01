@@ -1,0 +1,47 @@
+# © The People's Operator 2026
+name: TPO trade-in prices
+
+on:
+  schedule:
+    - cron: "0 * * * *"   # hourly, on the hour (UTC)
+  workflow_dispatch: {}    # lets you run it manually from the Actions tab
+
+permissions:
+  contents: write          # allows the job to commit prices.json back
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Scrape prices to prices.json
+        env:
+          TPO_TENANT_ID: "04fedcfc9da62eabfa3b1b499dd67f3133ce8599c810a44b5b5616f8a7c01120"
+          TPO_TRADEIN_URL: "https://tpoteststore.myshopify.com/pages/tpo-trade-in"
+          TPO_CATEGORIES: "iPhone,Galaxy S Series,Pixel"
+        run: node scrape-and-push.mjs
+
+      - name: Commit prices.json if changed
+        run: |
+          git config user.name  "tpo-price-bot"
+          git config user.email "bot@thepeoplesoperator.com"
+          if ! git diff --quiet -- prices.json; then
+            git add prices.json
+            git commit -m "Update trade-in prices [skip ci]"
+            git push
+            echo "prices.json updated."
+          else
+            echo "No price changes."
+          fi
