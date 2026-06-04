@@ -5,9 +5,28 @@ import { writeFileSync } from "fs";
 const TENANT = process.env.TPO_TENANT_ID || "04fedcfc9da62eabfa3b1b499dd67f3133ce8599c810a44b5b5616f8a7c01120";
 const TRADEIN_URL = process.env.TPO_TRADEIN_URL || "https://tpoteststore.myshopify.com/pages/tpo-trade-in";
 const OUT_FILE = process.env.TPO_OUT_FILE || "prices.json";
-const CATEGORIES = (process.env.TPO_CATEGORIES || "iPhone,Galaxy S Series,Pixel").split(",").map(s => s.trim()).filter(Boolean);
+/* Leave TPO_CATEGORIES unset to auto-discover & scrape every category Reusely offers.
+   Set it to a comma list only if you want to restrict to specific categories. */
+const CATEGORIES = (process.env.TPO_CATEGORIES || "").split(",").map(s => s.trim()).filter(Boolean);
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+/* in-page: list every top-level category (cards without a "get up to" price) */
+function discoverCategoriesInPage() {
+  return new Promise(async (resolve) => {
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const sr = () => { const bw = document.querySelector(".buyback-widget"); return bw && bw.shadowRoot; };
+    const fc = (el) => { if (!el) return; const r = el.getBoundingClientRect(); const o = { bubbles: true, cancelable: true, composed: true, clientX: r.left + 5, clientY: r.top + 5, view: window }; ["pointerover","pointerdown","mousedown","pointerup","mouseup","click"].forEach(t => { const E = t.indexOf("pointer") === 0 ? PointerEvent : MouseEvent; el.dispatchEvent(new E(t, o)); }); };
+    const back = () => { const b = sr() && sr().querySelector('[class*="back" i] button,button[class*="back" i],button[aria-label*="back" i]'); if (b) { fc(b); return true; } return false; };
+    if (!sr()) return resolve([]);
+    for (let i = 0; i < 6; i++) { if (!back()) break; await sleep(450); }
+    await sleep(500);
+    const titles = [...sr().querySelectorAll(".section-card-container,.section-card,.card")]
+      .map(c => { const t = c.querySelector(".section-card-title"); return t ? t.textContent.replace(/\s+/g, " ").trim() : ""; })
+      .filter(t => t && !/get up to/i.test(t));
+    resolve([...new Set(titles)]);
+  });
+}
 
 /* in-page scrape for one category */
 function scrapeCategoryInPage(categoryName) {
@@ -62,8 +81,17 @@ function scrapeCategoryInPage(categoryName) {
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage();
-  await page.goto(TRADEIN_URL, { waitUntil: "networkidle", timeout: 60000 });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 2200 } });
+
+  /* Serve our own minimal shell at the store URL. The document origin stays the
+     store domain (so the widget's domain allowlist passes) but there's no
+     password gate and no dependency on the live page's markup. */
+  await page.route(TRADEIN_URL, (route) => route.fulfill({
+    status: 200,
+    contentType: "text/html; charset=utf-8",
+    body: '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=1280"></head><body><div class="buyback-widget"></div></body></html>'
+  }));
+  await page.goto(TRADEIN_URL, { waitUntil: "load", timeout: 60000 });
 
   await page.evaluate(async (tenant) => {
     await new Promise((res) => {
@@ -78,9 +106,18 @@ function scrapeCategoryInPage(categoryName) {
 
   await sleep(4000);
 
+  let categories = CATEGORIES;
+  if (!categories.length) {
+    categories = await page.evaluate(discoverCategoriesInPage);
+    console.log(`Discovered ${categories.length} categories: ${categories.join(", ")}`);
+  }
+  if (!categories.length) { console.error("No categories found — aborting (keeping previous prices.json)."); process.exit(1); }
+
   const devices = [];
-  for (const cat of CATEGORIES) {
+  for (const cat of categories) {
     const models = await page.evaluate(scrapeCategoryInPage, cat);
+    const n = Array.isArray(models) ? models.length : 0;
+    console.log(`  ${cat}: ${n} model(s)`);
     if (Array.isArray(models)) devices.push(...models);
     await sleep(500);
   }
@@ -88,7 +125,17 @@ function scrapeCategoryInPage(categoryName) {
 
   if (!devices.length) { console.error("No devices scraped — aborting (keeping previous prices.json)."); process.exit(1); }
 
-  const json = JSON.stringify({ updated: new Date().toISOString(), currency: "GBP", devices }, null, 0);
+  /* dedupe by name — keep the richest entry (most storage tiers, then highest price) */
+  const byName = new Map();
+  for (const d of devices) {
+    if (!d || !d.name || d.price == null) continue;
+    const prev = byName.get(d.name);
+    const score = (x) => (x.storage ? Object.keys(x.storage).length : 0) * 1e6 + (x.price || 0);
+    if (!prev || score(d) > score(prev)) byName.set(d.name, d);
+  }
+  const unique = [...byName.values()].sort((a, b) => (b.price || 0) - (a.price || 0));
+
+  const json = JSON.stringify({ updated: new Date().toISOString(), currency: "GBP", devices: unique }, null, 0);
   writeFileSync(OUT_FILE, json);
-  console.log(`Wrote ${devices.length} devices to ${OUT_FILE}`);
+  console.log(`Wrote ${unique.length} unique devices (from ${devices.length} scraped) to ${OUT_FILE}`);
 })().catch(e => { console.error(e.message || e); process.exit(1); });
