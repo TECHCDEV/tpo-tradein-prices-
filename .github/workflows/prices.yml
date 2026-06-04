@@ -45,3 +45,10 @@ jobs:
           else
             echo "No price changes."
           fi
+
+      - name: Create missing model pages
+        env:
+          SHOPIFY_STORE: "tpoteststore.myshopify.com"
+          SHOPIFY_ADMIN_TOKEN: ${{ secrets.SHOPIFY_ADMIN_TOKEN }}
+          # SHOPIFY_API_VERSION: "2025-01"   # bump if needed
+        run: node create-pages.mjs
