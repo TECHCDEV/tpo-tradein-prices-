@@ -30,7 +30,7 @@ jobs:
         env:
           TPO_TENANT_ID: "04fedcfc9da62eabfa3b1b499dd67f3133ce8599c810a44b5b5616f8a7c01120"
           TPO_TRADEIN_URL: "https://tpoteststore.myshopify.com/pages/tpo-trade-in"
-          TPO_CATEGORIES: "iPhone,Galaxy S Series,Pixel"
+          # TPO_CATEGORIES left unset → auto-discover & scrape every category
         run: node scrape-and-push.mjs
 
       - name: Commit prices.json if changed
