@@ -147,7 +147,7 @@ function scrapeCategoryInPage(categoryName) {
     const models = await page.evaluate(scrapeCategoryInPage, cat);
     const n = Array.isArray(models) ? models.length : 0;
     console.log(`  ${cat}: ${n} model(s)`);
-    if (Array.isArray(models)) devices.push(...models);
+    if (Array.isArray(models)) { models.forEach(m => { if (m) m.category = cat; }); devices.push(...models); }
     await sleep(500);
   }
   await browser.close();
